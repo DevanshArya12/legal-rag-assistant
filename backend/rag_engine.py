@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from database import get_document
-from storage import (download_pdf, download_storage_file, upload_storage_file)
+from storage import (download_pdf, download_storage_file, upload_storage_file, delete_storage_file)
 
 load_dotenv()
 
@@ -819,18 +819,41 @@ def load_rag_from_disk(conversation_id):
 
 
 def delete_persisted_rag(conversation_id):
-    """
-    Remove any persisted RAG data for a conversation. Safe to call
-    even if nothing was ever persisted.
-    """
     storage_dir = _storage_dir(conversation_id)
 
     if os.path.exists(storage_dir):
         try:
             shutil.rmtree(storage_dir)
-            print(f"RAG INDEX REMOVED FROM DISK (conversation_id={conversation_id})")
+            print(
+                f"RAG INDEX REMOVED FROM DISK "
+                f"(conversation_id={conversation_id})"
+            )
         except Exception as e:
-            print(f"[RAG PERSIST] Failed to remove persisted RAG data: {e}")
+            print(
+                f"[RAG PERSIST] Failed to remove local RAG data: {e}"
+            )
+
+    storage_base = f"rag/{conversation_id}"
+
+    for filename in [
+        "index.faiss",
+        "metadata.json",
+        "bm25.pkl"
+    ]:
+        try:
+            delete_storage_file(
+                f"{storage_base}/{filename}"
+            )
+        except Exception as e:
+            print(
+                f"[RAG PERSIST] Failed to remove "
+                f"Supabase artifact {filename}: {e}"
+            )
+
+    print(
+        f"[RAG PERSIST] Supabase RAG artifacts removed "
+        f"(conversation_id={conversation_id})"
+    )
 
 
 def clear_query_cache(conversation_id):
