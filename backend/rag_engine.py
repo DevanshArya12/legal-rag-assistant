@@ -125,7 +125,7 @@ def get_reranker():
 
     return reranker_tokenizer, reranker_session
 
-def encode_embeddings(texts, batch_size=8):
+def encode_embeddings(texts, batch_size=4):
     tokenizer, session = get_embedding_model()
     print(f"Starting embedding of {len(texts)} chunks...", flush=True)
     all_embeddings = []
@@ -785,10 +785,7 @@ def clear_query_cache(conversation_id):
     query_cache.pop(conversation_id, None)
 
 
-def process_uploaded_pdf(
-    conversation_id,
-    pdf_path
-):
+def process_uploaded_pdf(conversation_id, pdf_path):
     """
     Called on upload AND on replacement. Any old persisted index /
     cached answers for this conversation are invalidated first so a
@@ -890,11 +887,7 @@ def restore_rag_session(conversation_id):
                 )
 
 
-def get_exact_article_docs(
-    documents,
-    metadata,
-    article_number
-):
+def get_exact_article_docs(documents, metadata, article_number):
     if not article_number:
         return []
 
@@ -919,11 +912,7 @@ def get_exact_article_docs(
     return results
 
 
-def get_exact_section_docs(
-    documents,
-    metadata,
-    section_key
-):
+def get_exact_section_docs(documents, metadata, section_key):
     if not section_key:
         return []
 
@@ -957,12 +946,7 @@ def get_exact_section_docs(
     return results
 
 
-def rerank(
-    query,
-    docs,
-    top_k=5,
-    batch_size=4
-):
+def rerank(query, docs, top_k=5, batch_size=4):
     if not docs:
         return []
 
