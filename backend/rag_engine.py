@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from database import get_document
-from storage import download_pdf
+from storage import (download_pdf, download_storage_file, upload_storage_file)
 
 load_dotenv()
 
@@ -573,11 +573,10 @@ def _storage_paths(conversation_id):
 
 def save_rag_to_disk(conversation_id, rag_data):
     """
-    Persist FAISS index + chunk metadata + BM25 to disk so the PDF
-    does not need to be reprocessed after a server restart.
-    Failures here are logged but never raise — persistence is a
-    best-effort optimization, not a hard requirement for the
-    request to succeed.
+    Persist RAG artifacts locally and upload them to Supabase Storage.
+
+    Local storage is used for fast access while the server instance
+    is alive. Supabase provides durable persistence across restarts.
     """
 
     paths = _storage_paths(conversation_id)
@@ -585,14 +584,21 @@ def save_rag_to_disk(conversation_id, rag_data):
     try:
         os.makedirs(paths["dir"], exist_ok=True)
 
-        faiss.write_index(rag_data["index"], paths["index"])
+        faiss.write_index(
+            rag_data["index"],
+            paths["index"]
+        )
 
         tokenized_docs = [
             tokenize(doc)
             for doc in rag_data["documents"]
         ]
 
-        with open(paths["metadata"], "w", encoding="utf-8") as f:
+        with open(
+            paths["metadata"],
+            "w",
+            encoding="utf-8"
+        ) as f:
             json.dump(
                 {
                     "documents":      rag_data["documents"],
@@ -603,53 +609,150 @@ def save_rag_to_disk(conversation_id, rag_data):
                 f
             )
 
+
         try:
-            with open(paths["bm25"], "wb") as f:
-                pickle.dump(rag_data["bm25"], f)
+            with open(
+                paths["bm25"],
+                "wb"
+            ) as f:
+                pickle.dump(
+                    rag_data["bm25"],
+                    f
+                )
+
         except Exception as bm25_err:
-            print(f"[RAG PERSIST] Could not pickle BM25 directly, "
-                  f"will reconstruct from tokenized docs on load: {bm25_err}")
+            print(
+                f"[RAG PERSIST] Could not pickle BM25 directly, "
+                f"will reconstruct from tokenized docs on load: "
+                f"{bm25_err}"
+            )
+
             if os.path.exists(paths["bm25"]):
                 os.remove(paths["bm25"])
 
-        print(f"RAG INDEX SAVED (conversation_id={conversation_id})")
+        storage_base = (
+            f"rag/{conversation_id}"
+        )
+
+        upload_storage_file(
+            paths["index"],
+            f"{storage_base}/index.faiss",
+            "application/octet-stream"
+        )
+
+        upload_storage_file(
+            paths["metadata"],
+            f"{storage_base}/metadata.json",
+            "application/json"
+        )
+
+        if os.path.exists(paths["bm25"]):
+            upload_storage_file(
+                paths["bm25"],
+                f"{storage_base}/bm25.pkl",
+                "application/octet-stream"
+            )
+
+        print(
+            f"RAG INDEX SAVED LOCALLY AND TO SUPABASE "
+            f"(conversation_id={conversation_id})"
+        )
 
     except Exception as e:
-        print(f"[RAG PERSIST] Failed to save RAG index to disk: {e}")
+        print(
+            f"[RAG PERSIST] Failed to save RAG index: {e}"
+        )
 
 
 def load_rag_from_disk(conversation_id):
-    """
-    Attempt to load a previously persisted RAG index.
-    Returns None (never raises) if nothing valid is found, so the
-    caller can safely fall back to rebuilding from the PDF.
-    """
-
     paths = _storage_paths(conversation_id)
 
     print(
-        f"[RAG PERSIST] Checking disk storage for {conversation_id}",
+        f"[RAG PERSIST] Checking local storage for {conversation_id}",
+        flush=True
+    )
+
+    local_index_exists = os.path.exists(paths["index"])
+    local_metadata_exists = os.path.exists(paths["metadata"])
+
+    print(
+        f"[RAG PERSIST] Local index exists: {local_index_exists}",
         flush=True
     )
 
     print(
-        f"[RAG PERSIST] Index exists: {os.path.exists(paths['index'])}",
+        f"[RAG PERSIST] Local metadata exists: {local_metadata_exists}",
         flush=True
     )
 
-    print(
-        f"[RAG PERSIST] Metadata exists: {os.path.exists(paths['metadata'])}",
-        flush=True
-    )
+    if not (
+        local_index_exists
+        and local_metadata_exists
+    ):
+        print(
+            f"[RAG PERSIST] Local RAG not found. "
+            f"Checking Supabase for {conversation_id}",
+            flush=True
+        )
 
-    if not (os.path.exists(paths["index"]) and os.path.exists(paths["metadata"])):
-        return None
+        storage_base = f"rag/{conversation_id}"
+
+        try:
+            os.makedirs(
+                paths["dir"],
+                exist_ok=True
+            )
+
+            download_storage_file(
+                f"{storage_base}/index.faiss",
+                paths["index"]
+            )
+
+            download_storage_file(
+                f"{storage_base}/metadata.json",
+                paths["metadata"]
+            )
+
+            try:
+                download_storage_file(
+                    f"{storage_base}/bm25.pkl",
+                    paths["bm25"]
+                )
+
+            except Exception as bm25_download_err:
+                print(
+                    f"[RAG PERSIST] BM25 artifact not available "
+                    f"({bm25_download_err}). "
+                    f"Will reconstruct it from tokenized docs."
+                )
+
+            print(
+                f"[RAG PERSIST] RAG artifacts downloaded "
+                f"from Supabase for {conversation_id}",
+                flush=True
+            )
+
+        except Exception as e:
+            print(
+                f"[RAG PERSIST] No valid RAG artifacts found "
+                f"in Supabase: {e}",
+                flush=True
+            )
+
+            return None
 
     try:
-        with open(paths["metadata"], "r", encoding="utf-8") as f:
+        with open(
+            paths["metadata"],
+            "r",
+            encoding="utf-8"
+        ) as f:
             blob = json.load(f)
 
-        config = blob.get("config", {})
+        config = blob.get(
+            "config",
+            {}
+        )
 
         if config != CURRENT_RAG_CONFIG:
             print(
@@ -657,42 +760,61 @@ def load_rag_from_disk(conversation_id):
                 "(embedding model / chunking / index version changed). "
                 "Rebuilding from PDF."
             )
+
             return None
 
-        documents      = blob["documents"]
-        metadata       = blob["metadata"]
+        documents = blob["documents"]
+        metadata = blob["metadata"]
         tokenized_docs = blob["tokenized_docs"]
 
-        index = faiss.read_index(paths["index"])
+        index = faiss.read_index(
+            paths["index"]
+        )
 
         bm25 = None
 
         if os.path.exists(paths["bm25"]):
             try:
-                with open(paths["bm25"], "rb") as f:
+                with open(
+                    paths["bm25"],
+                    "rb"
+                ) as f:
                     bm25 = pickle.load(f)
+
             except Exception as bm25_err:
                 print(
                     f"[RAG PERSIST] Could not unpickle BM25 "
                     f"({bm25_err}); reconstructing from tokenized docs."
                 )
+
                 bm25 = None
 
         if bm25 is None:
-            bm25 = BM25Okapi(tokenized_docs)
+            bm25 = BM25Okapi(
+                tokenized_docs
+            )
 
-        print(f"RAG INDEX LOADED FROM DISK (conversation_id={conversation_id})")
+        print(
+            f"[RAG PERSIST] RAG INDEX LOADED "
+            f"(conversation_id={conversation_id}, "
+            f"chunks={len(documents)})",
+            flush=True
+        )
 
         return {
             "documents": documents,
-            "metadata":  metadata,
-            "bm25":      bm25,
-            "index":     index,
+            "metadata": metadata,
+            "bm25": bm25,
+            "index": index,
         }
 
     except Exception as e:
-        print(f"[RAG PERSIST] Failed to load persisted RAG index "
-              f"(will rebuild from PDF): {e}")
+        print(
+            f"[RAG PERSIST] Failed to load persisted RAG "
+            f"(will rebuild from PDF): {e}",
+            flush=True
+        )
+
         return None
 
 

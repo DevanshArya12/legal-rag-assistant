@@ -53,3 +53,51 @@ def delete_pdf(storage_path: str):
     supabase.storage.from_(SUPABASE_BUCKET).remove(
         [storage_path]
     )
+
+
+def upload_storage_file(
+    file_path: str,
+    storage_path: str,
+    content_type: str
+):
+    """
+    Upload a generic file to Supabase Storage.
+    Used for persisted RAG artifacts.
+    """
+
+    with open(file_path, "rb") as file:
+        return supabase.storage.from_(SUPABASE_BUCKET).upload(
+            file=file,
+            path=storage_path,
+            file_options={
+                "content-type": content_type,
+                "upsert": "true"
+            }
+        )
+
+
+def download_storage_file(
+    storage_path: str,
+    destination_path: str
+):
+    """
+    Download a generic file from Supabase Storage
+    to a local temporary file.
+    """
+
+    data = supabase.storage.from_(SUPABASE_BUCKET).download(
+        storage_path
+    )
+
+    with open(destination_path, "wb") as file:
+        file.write(data)
+
+
+def delete_storage_file(storage_path: str):
+    """
+    Delete a generic file from Supabase Storage.
+    """
+
+    supabase.storage.from_(SUPABASE_BUCKET).remove(
+        [storage_path]
+    )
