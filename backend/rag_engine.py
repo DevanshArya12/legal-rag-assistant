@@ -6,7 +6,6 @@ import shutil
 import pymupdf
 import faiss
 import numpy as np
-# pyrefly: ignore [missing-import]
 import onnxruntime as ort
 import gc
 
@@ -572,13 +571,6 @@ def _storage_paths(conversation_id):
 
 
 def save_rag_to_disk(conversation_id, rag_data):
-    """
-    Persist RAG artifacts locally and upload them to Supabase Storage.
-
-    Local storage is used for fast access while the server instance
-    is alive. Supabase provides durable persistence across restarts.
-    """
-
     paths = _storage_paths(conversation_id)
 
     try:
@@ -601,14 +593,13 @@ def save_rag_to_disk(conversation_id, rag_data):
         ) as f:
             json.dump(
                 {
-                    "documents":      rag_data["documents"],
-                    "metadata":       rag_data["metadata"],
+                    "documents": rag_data["documents"],
+                    "metadata": rag_data["metadata"],
                     "tokenized_docs": tokenized_docs,
-                    "config":         CURRENT_RAG_CONFIG,
+                    "config": CURRENT_RAG_CONFIG,
                 },
                 f
             )
-
 
         try:
             with open(
@@ -619,20 +610,11 @@ def save_rag_to_disk(conversation_id, rag_data):
                     rag_data["bm25"],
                     f
                 )
-
-        except Exception as bm25_err:
-            print(
-                f"[RAG PERSIST] Could not pickle BM25 directly, "
-                f"will reconstruct from tokenized docs on load: "
-                f"{bm25_err}"
-            )
-
+        except Exception:
             if os.path.exists(paths["bm25"]):
                 os.remove(paths["bm25"])
 
-        storage_base = (
-            f"rag/{conversation_id}"
-        )
+        storage_base = f"rag/{conversation_id}"
 
         upload_storage_file(
             paths["index"],
@@ -653,8 +635,13 @@ def save_rag_to_disk(conversation_id, rag_data):
                 "application/octet-stream"
             )
 
+        shutil.rmtree(
+            paths["dir"],
+            ignore_errors=True
+        )
+
         print(
-            f"RAG INDEX SAVED LOCALLY AND TO SUPABASE "
+            f"RAG INDEX SAVED TO SUPABASE "
             f"(conversation_id={conversation_id})"
         )
 
@@ -666,82 +653,29 @@ def save_rag_to_disk(conversation_id, rag_data):
 
 def load_rag_from_disk(conversation_id):
     paths = _storage_paths(conversation_id)
-
-    print(
-        f"[RAG PERSIST] Checking local storage for {conversation_id}",
-        flush=True
-    )
-
-    local_index_exists = os.path.exists(paths["index"])
-    local_metadata_exists = os.path.exists(paths["metadata"])
-
-    print(
-        f"[RAG PERSIST] Local index exists: {local_index_exists}",
-        flush=True
-    )
-
-    print(
-        f"[RAG PERSIST] Local metadata exists: {local_metadata_exists}",
-        flush=True
-    )
-
-    if not (
-        local_index_exists
-        and local_metadata_exists
-    ):
-        print(
-            f"[RAG PERSIST] Local RAG not found. "
-            f"Checking Supabase for {conversation_id}",
-            flush=True
-        )
-
-        storage_base = f"rag/{conversation_id}"
-
-        try:
-            os.makedirs(
-                paths["dir"],
-                exist_ok=True
-            )
-
-            download_storage_file(
-                f"{storage_base}/index.faiss",
-                paths["index"]
-            )
-
-            download_storage_file(
-                f"{storage_base}/metadata.json",
-                paths["metadata"]
-            )
-
-            try:
-                download_storage_file(
-                    f"{storage_base}/bm25.pkl",
-                    paths["bm25"]
-                )
-
-            except Exception as bm25_download_err:
-                print(
-                    f"[RAG PERSIST] BM25 artifact not available "
-                    f"({bm25_download_err}). "
-                    f"Will reconstruct it from tokenized docs."
-                )
-
-            print(
-                f"[RAG PERSIST] RAG artifacts downloaded "
-                f"from Supabase for {conversation_id}",
-                flush=True
-            )
-
-        except Exception as e:
-            print(
-                f"[RAG PERSIST] No valid RAG artifacts found "
-                f"in Supabase: {e}",
-                flush=True
-            )
-
-            return None
+    storage_base = f"rag/{conversation_id}"
 
     try:
+        os.makedirs(paths["dir"], exist_ok=True)
+
+        download_storage_file(
+            f"{storage_base}/index.faiss",
+            paths["index"]
+        )
+
+        download_storage_file(
+            f"{storage_base}/metadata.json",
+            paths["metadata"]
+        )
+
+        try:
+            download_storage_file(
+                f"{storage_base}/bm25.pkl",
+                paths["bm25"]
+            )
+        except Exception:
+            pass
+
         with open(
             paths["metadata"],
             "r",
@@ -749,18 +683,9 @@ def load_rag_from_disk(conversation_id):
         ) as f:
             blob = json.load(f)
 
-        config = blob.get(
-            "config",
-            {}
-        )
+        config = blob.get("config", {})
 
         if config != CURRENT_RAG_CONFIG:
-            print(
-                "[RAG PERSIST] Persisted RAG index config is stale "
-                "(embedding model / chunking / index version changed). "
-                "Rebuilding from PDF."
-            )
-
             return None
 
         documents = blob["documents"]
@@ -780,13 +705,7 @@ def load_rag_from_disk(conversation_id):
                     "rb"
                 ) as f:
                     bm25 = pickle.load(f)
-
-            except Exception as bm25_err:
-                print(
-                    f"[RAG PERSIST] Could not unpickle BM25 "
-                    f"({bm25_err}); reconstructing from tokenized docs."
-                )
-
+            except Exception:
                 bm25 = None
 
         if bm25 is None:
@@ -810,12 +729,18 @@ def load_rag_from_disk(conversation_id):
 
     except Exception as e:
         print(
-            f"[RAG PERSIST] Failed to load persisted RAG "
-            f"(will rebuild from PDF): {e}",
+            f"[RAG PERSIST] Failed to load persisted RAG: {e}",
             flush=True
         )
 
         return None
+
+    finally:
+        if os.path.exists(paths["dir"]):
+            shutil.rmtree(
+                paths["dir"],
+                ignore_errors=True
+            )
 
 
 def delete_persisted_rag(conversation_id):
